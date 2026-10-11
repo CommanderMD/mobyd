@@ -427,6 +427,7 @@ export default definePluginEntry({
               ? "critical"
               : "warning",
           allowedDecisions: ["allow-once", "deny"],
+          timeoutMs: 10 * 60_000, // Commander may be on his phone, not watching
           pluginId: "mobyd-nemo",
         },
       };
