@@ -99,6 +99,7 @@ const READONLY_BIN = new Set([
   "pnpm",
   "npm",
   "wrangler",
+  "mobymail",
 ]);
 const READONLY_SUBCMD: Record<string, RegExp> = {
   git: /^(status|log|diff|show|branch|remote|rev-parse|ls-files|describe|tag|stash list|config --get)/,
@@ -109,6 +110,7 @@ const READONLY_SUBCMD: Record<string, RegExp> = {
   wrangler:
     /^(whoami|--version|d1 list|kv namespace list|r2 bucket list|secret list|deployments list)/,
   diskutil: /^(list|info)/,
+  mobymail: /^(whoami|list|read|search)\b/,
   sed: /^(?![^|]*\s-i)/,
   xargs: /^(ls|cat|wc|grep|head|tail|stat|file)\b/,
 };
@@ -188,7 +190,10 @@ const HARD_STOP_PATTERNS: Array<[RegExp, string]> = [
     /\b(buy|sell|trade|order|pay|transfer|withdraw|deposit)\b.*\b(btc|eth|usd|\$\d|shares|contract)/i,
     "money",
   ],
-  [/\b(mail|sendmail|himalaya\s+(send|reply)|telegram.*send|sms|twilio)\b/i, "sends to a human"],
+  [
+    /\b(mail|sendmail|himalaya\s+(send|reply)|telegram.*send|sms|twilio)\b|\bmobymail\s+send\b/i,
+    "sends to a human",
+  ],
 ];
 const DELETE_CMD = /\b(rm|rmdir|unlink|trash|shred)\b\s+(-[a-zA-Z]+\s+)*(\S+)/g;
 function underSandbox(path: string): boolean {
