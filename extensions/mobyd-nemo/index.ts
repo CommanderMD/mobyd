@@ -160,6 +160,58 @@ function isReadOnlyCommand(cmd: string): boolean {
   });
 }
 
+// Hard stops — the only things that cost Commander a tap. Everything else he asked for
+// runs and is logged ("if there is no real danger of losing money, messing up a system,
+// or breaking the law, finish the mission"). NEMO's risk score never reaches this gate.
+const SANDBOX_ROOTS = ["/Volumes/MOBY_D/COMMANDERS ULTIMATE PLAN", "~/.mobyd", "/tmp"];
+const HARD_STOP_PATTERNS: Array<[RegExp, string]> = [
+  [/\bsudo\b|\bsu\b\s/, "privilege escalation"],
+  [/\b(mkfs|diskutil\s+(erase|partition|apfs\s+delete)|dd\s+if=|fdisk)\b/, "disk destruction"],
+  [
+    /\b(launchctl|defaults\s+write|osascript|crontab|systemsetup|scutil|networksetup|pmset)\b/,
+    "system settings",
+  ],
+  [/\bgit\s+push\b|\bgit\s+(reset\s+--hard|clean\s+-f|branch\s+-D)/, "git publish / destructive"],
+  [
+    /\bwrangler\s+(deploy|delete|secret|d1\s+execute|r2\s+bucket\s+delete|kv\s+key\s+delete)/,
+    "cloud deploy / mutate",
+  ],
+  [/\b(npm|pnpm)\s+publish\b|\bgh\s+(release|repo\s+delete|pr\s+merge)/, "publish / merge"],
+  [
+    /\bcurl\b[^|;]*\s-(X\s*(POST|PUT|PATCH|DELETE)|d\b|-data)|\bwget\b.*--post/,
+    "mutating network call",
+  ],
+  [/\b(ssh|scp|rsync)\b\s+\S*@/, "remote host"],
+  [/\bkill(all)?\b|\bpkill\b/, "process kill"],
+  [/\b(chmod|chown)\b\s+(-R\s+)?\S+\s+\/(System|usr|bin|etc|Library)/, "system permissions"],
+  [
+    /\b(buy|sell|trade|order|pay|transfer|withdraw|deposit)\b.*\b(btc|eth|usd|\$\d|shares|contract)/i,
+    "money",
+  ],
+  [/\b(mail|sendmail|himalaya\s+(send|reply)|telegram.*send|sms|twilio)\b/i, "sends to a human"],
+];
+const DELETE_CMD = /\b(rm|rmdir|unlink|trash|shred)\b\s+(-[a-zA-Z]+\s+)*(\S+)/g;
+function underSandbox(path: string): boolean {
+  const p = path.replace(/^["']|["']$/g, "").replace(/^~/, homedir());
+  return SANDBOX_ROOTS.some((r) => p.startsWith(r.replace(/^~/, homedir())));
+}
+function hardStopReason(cmd: string): string | undefined {
+  for (const [re, why] of HARD_STOP_PATTERNS) if (re.test(cmd)) return why;
+  for (const m of cmd.matchAll(DELETE_CMD))
+    if (!underSandbox(m[3])) return `delete outside sandbox (${m[3]})`;
+  for (const m of cmd.matchAll(/(?<![<>&\d])>{1,2}\s*(\S+)/g)) {
+    const t = m[1];
+    if (t !== "/dev/null" && !t.startsWith("&") && !underSandbox(t) && /^[~\/]/.test(t))
+      return `writes outside sandbox (${t})`;
+  }
+  for (const m of cmd.matchAll(/\b(mv|cp)\b\s+(?:-\S+\s+)*\S+\s+(\S+)/g)) {
+    if (/^[~\/]/.test(m[2]) && !underSandbox(m[2])) return `${m[1]} outside sandbox (${m[2]})`;
+  }
+  return undefined;
+}
+const HARD_STOP_TOOLS =
+  /^(message|tts|sessions_send|mail|email|send|deploy|publish|pay|trade|order)$/i;
+
 function expandHome(p: string) {
   return p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
 }
@@ -650,34 +702,64 @@ export default definePluginEntry({
             p.startsWith("/Volumes/MOBY_D/COMMANDERS ULTIMATE PLAN") ||
             p.startsWith(join(homedir(), ".mobyd/workspace")),
         );
-      // Declared-sandboxed actions (e.g. `remember` → Moby's own R2 bucket) are writes with
-      // no blast radius outside Moby: they run without a tap and are logged.
+      // Declared-sandboxed actions (e.g. `remember` → Moby's own R2 bucket) run without a tap.
       if (declaredSandboxed && d?.sender_is_owner) {
         log.info(`[nemo] sandboxed action passed: ${effectiveTool}`);
         return undefined;
       }
-      const needs =
-        !d ||
-        d.nemo_offline ||
-        d.outcome === "approval_required" ||
-        RISKY_TOOL.test(effectiveTool) ||
-        !declared;
-      if (!needs || (sandboxed && d?.risk === "writes_files")) return undefined;
+      // Commander's gate is a hard-stop list, not an allowlist. NEMO's message-level verdict
+      // is logged for training but never decides here — measured today, it flagged 24/30
+      // ordinary messages. Non-owners never reach this point (blocked above).
+      const reasons: string[] = [];
+      for (const c of cmds) {
+        if (c === "__opaque__") {
+          // Node code with no shell command: pass if it only touches sandbox paths and
+          // never reaches a shell, the network, or a process.
+          const paths = [...codeStr.matchAll(/["'`]((?:~|\/)[^"'`\n]{1,200})["'`]/g)].map(
+            (m) => m[1],
+          );
+          const reachesOut =
+            /child_process|\bexec(Sync)?\s*\(|\bspawn|\bfetch\s*\(|https?:\/\/|\bnet\.|\bdgram|process\.(kill|exit)/.test(
+              codeStr,
+            );
+          if (!reachesOut && paths.length > 0 && paths.every(underSandbox)) continue;
+          reasons.push(
+            reachesOut
+              ? "code reaches out (shell/network/process)"
+              : paths.length
+                ? `code touches paths outside sandbox (${paths.find((x) => !underSandbox(x))})`
+                : "opaque code (cannot see what it does)",
+          );
+          continue;
+        }
+        const why = hardStopReason(c);
+        if (why) reasons.push(why);
+      }
+      if (HARD_STOP_TOOLS.test(effectiveTool))
+        reasons.push(`tool ${effectiveTool} acts on the outside world`);
+      if (!d) reasons.push("no decision on record");
+      if (event.derivedPaths?.length && !sandboxed) reasons.push("writes outside sandbox");
+      const needs = reasons.length > 0;
+      if (!needs) {
+        log.info(
+          `[nemo] proceed (owner): ${effectiveTool}${cmds.length ? ` cmd="${clip(cmds.join(" | "), 80)}"` : ""}`,
+        );
+        return undefined;
+      }
       if (advisoryOnly) {
         log.info(`[nemo] (advisory) would require approval for ${tool}`);
         return undefined;
       }
       log.info(
-        `[nemo] approval demanded for ${effectiveTool}${effectiveTool !== tool ? ` (via ${tool})` : ""}: ${d ? `rule=${d.policy_rule} risk=${d.risk}` : "no decision (fail-closed)"}${cmds.length ? ` cmd="${clip(cmds.join(" | "), 80)}"` : ""}`,
+        `[nemo] approval demanded for ${effectiveTool}: ${reasons.join("; ")}${cmds.length ? ` cmd="${clip(cmds.join(" | "), 80)}"` : ""}`,
       );
       return {
         requireApproval: {
           title: `NEMO: approve ${effectiveTool}?`,
-          description: `${d ? `intent=${d.intent}, risk=${d.risk}, rule=${d.policy_rule}` : "no decision on record (fail-closed)"}\nparams: ${clip(JSON.stringify(event.params ?? {}), 300)}`,
-          severity:
-            d && ["spends_money", "touches_prod", "irreversible"].includes(d.risk)
-              ? "critical"
-              : "warning",
+          description: `Why: ${reasons.join("; ")}\n${cmds.length ? `cmd: ${clip(cmds.join(" | "), 200)}` : `params: ${clip(JSON.stringify(event.params ?? {}), 200)}`}`,
+          severity: /money|disk|privilege|outside world|remote/.test(reasons.join(" "))
+            ? "critical"
+            : "warning",
           allowedDecisions: ["allow-once", "deny"],
           timeoutMs: 10 * 60_000, // Commander may be on his phone, not watching
           pluginId: "mobyd-nemo",
