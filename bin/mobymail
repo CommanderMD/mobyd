@@ -1,0 +1,2 @@
+#!/bin/sh
+exec node "/Volumes/MOBY_D/COMMANDERS ULTIMATE PLAN/mobyd/mobyd/tools/mobymail.mjs" "$@"

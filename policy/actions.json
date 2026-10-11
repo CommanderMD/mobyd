@@ -44,5 +44,13 @@
     "risk": "writes_files",
     "description": "File a note into shared cloud memory (R2 mobyd-knowledge)",
     "sandboxed": true
+  },
+  "mail_read": {
+    "risk": "read_only",
+    "description": "mobymail list/read/search/whoami (Microsoft Graph, Commander's mailbox)"
+  },
+  "mail_send": {
+    "risk": "irreversible",
+    "description": "mobymail send \u2014 reaches a human; always approval"
   }
 }
