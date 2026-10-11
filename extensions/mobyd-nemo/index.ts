@@ -119,18 +119,26 @@ function commandsFromParams(params: any): string[] {
     if (typeof v === "string" && v.trim()) out.push(v);
   };
   if (!params || typeof params !== "object") return out;
-  grab(params.command);
-  grab(params.cmd);
-  grab(params.script);
-  if (typeof params.code === "string") {
+  const looksLikeCode = (s: string) => /\b(await|return|require|const|let|exec\s*\()/.test(s);
+  const fromCode = (code: string) => {
     // code-mode: exec({ command: "..." }) or execSync('...') wrappers
-    for (const m of params.code.matchAll(
+    const found: string[] = [];
+    for (const m of code.matchAll(
       /(?:exec\s*\(\s*\{\s*command\s*:|execSync\s*\(|exec\s*\()\s*(["'`])([\s\S]*?)\1/g,
     ))
-      out.push(m[2]);
-    if (out.length === 0 && /child_process|exec\s*\(/.test(params.code)) out.push("__opaque__");
+      found.push(m[2]);
+    if (found.length === 0 && /child_process|exec\s*\(|require\s*\(|fs\./.test(code))
+      found.push("__opaque__");
+    return found;
+  };
+  for (const v of [params.command, params.cmd, params.script]) {
+    if (typeof v !== "string" || !v.trim()) continue;
+    if (looksLikeCode(v)) out.push(...fromCode(v));
+    else grab(v);
   }
-  return out;
+  if (typeof params.code === "string") out.push(...fromCode(params.code));
+  // de-dupe: code-mode mirrors `code` into `command`
+  return [...new Set(out)];
 }
 
 function isReadOnlyCommand(cmd: string): boolean {
@@ -218,7 +226,22 @@ export default definePluginEntry({
     };
     void getNemo();
 
+    // Decisions keyed by every session identifier the hooks hand us (message_received and
+    // before_tool_call do not always agree), plus a short-lived "latest" fallback so a key
+    // mismatch degrades to the most recent verdict instead of fail-closed on Commander.
     const decisions = new Map<string, Decision>();
+    let latest: { d: Decision; at: number } | undefined;
+    const remember = (d: Decision, ...keys: unknown[]) => {
+      for (const k of keys) if (k) decisions.set(String(k), d);
+      latest = { d, at: Date.now() };
+    };
+    const lookup = (...keys: unknown[]): Decision | undefined => {
+      for (const k of keys) {
+        const d = k ? decisions.get(String(k)) : undefined;
+        if (d) return d;
+      }
+      return latest && Date.now() - latest.at < 180_000 ? latest.d : undefined;
+    };
 
     function applyPolicy(
       d: Omit<Decision, "policy_rule" | "outcome">,
@@ -301,7 +324,7 @@ export default definePluginEntry({
       }
       const partial = { ...base, ...scored } as Omit<Decision, "policy_rule" | "outcome">;
       const d: Decision = { ...partial, ...applyPolicy(partial) };
-      decisions.set(sessionKey, d);
+      remember(d, sessionKey);
       try {
         mkdirSync(dirname(decisionLog), { recursive: true });
         appendFileSync(decisionLog, JSON.stringify(d) + "\n");
@@ -316,21 +339,32 @@ export default definePluginEntry({
 
     // 1. Every inbound message is decided before the model sees it.
     api.on("message_received", async (event: any, ctx: any) => {
-      const key = String(event.sessionKey ?? ctx?.conversationId ?? "default");
-      await decide(
+      const key = String(ctx?.sessionKey ?? event.sessionKey ?? ctx?.conversationId ?? "default");
+      const d = await decide(
         key,
         String(event.content ?? ""),
         event.senderId ? String(event.senderId) : undefined,
         String(ctx?.channelId ?? "unknown"),
       );
+      remember(d, key, event.sessionKey, ctx?.sessionKey, ctx?.conversationId, event.runId);
     });
 
     // 2. The model gets NEMO's verdict as a short, cacheable note; non-owners get no tools.
     api.on("before_prompt_build", async (event: any, ctx: any) => {
       const key = String(ctx?.sessionKey ?? "default");
-      let d = decisions.get(key);
-      if (!d && event.currentUserMessage)
-        d = await decide(key, String(event.currentUserMessage), undefined, "tui");
+      let d = lookup(key, ctx?.sessionId, ctx?.runId);
+      if (!d && event.currentUserMessage) {
+        // No channel hook fired (TUI/CLI path). Locality comes from the session key only;
+        // an unknown remote key is NOT Commander.
+        const local = /:(tui|cli|webchat)-/.test(key);
+        d = await decide(
+          key,
+          String(event.currentUserMessage),
+          undefined,
+          local ? "tui" : "unknown",
+        );
+        remember(d, key, ctx?.sessionId, ctx?.runId);
+      }
       if (!d) return undefined;
       // Short, behavioral, and cacheable. Scores live in decisions.jsonl, not in the prompt —
       // shown raw, the model narrates them instead of acting.
@@ -349,7 +383,7 @@ export default definePluginEntry({
     // 3. The gate. Policy decides; NEMO only informs. OpenClaw renders the approval prompt.
     api.on("before_tool_call", (event: any, ctx: any) => {
       const key = String(ctx?.sessionKey ?? "default");
-      const d = decisions.get(key);
+      const d = lookup(key, ctx?.sessionId, ctx?.runId);
       const tool = String(event.toolName ?? "");
       const declared = actions[tool]?.risk;
       const cmds = commandsFromParams(event.params);
