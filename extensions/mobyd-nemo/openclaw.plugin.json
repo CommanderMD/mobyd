@@ -3,16 +3,42 @@
   "name": "NEMO (MOBY-D head)",
   "description": "Decides intent, risk, memory need, complexity and approval for every inbound message; applies MOBY-D policy; logs every decision.",
   "enabledByDefault": false,
-  "activation": { "onStartup": true },
+  "activation": {
+    "onStartup": true
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "ownerIds": { "type": "array", "items": { "type": "string" }, "default": [] },
-      "autonomousConfidence": { "type": "number", "default": 0.75 },
-      "decisionLog": { "type": "string", "default": "~/.mobyd/decisions.jsonl" },
-      "repoRoot": { "type": "string", "default": "" },
-      "advisoryOnly": { "type": "boolean", "default": false }
+      "ownerIds": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": []
+      },
+      "autonomousConfidence": {
+        "type": "number",
+        "default": 0.75
+      },
+      "decisionLog": {
+        "type": "string",
+        "default": "~/.mobyd/decisions.jsonl"
+      },
+      "repoRoot": {
+        "type": "string",
+        "default": ""
+      },
+      "advisoryOnly": {
+        "type": "boolean",
+        "default": false
+      }
     }
+  },
+  "contracts": {
+    "tools": [
+      "recall",
+      "remember"
+    ]
   }
 }

@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { Type } from "typebox";
 import YAML from "yaml";
 
 type Decision = {
@@ -180,11 +181,56 @@ export default definePluginEntry({
 
     // Owner identity comes from config / settings file, never from message text.
     let ownerIds = new Set<string>((cfg.ownerIds as string[] | undefined) ?? []);
+    // RAG lives behind moby-router (/rag/search, /rag/put). URL + secret come from
+    // ~/.mobyd/mobyd-settings.json and the keys file it points at — never from the repo.
+    let ragUrl = "";
+    let ragSecret = "";
     try {
       const s = JSON.parse(readFileSync(expandHome("~/.mobyd/mobyd-settings.json"), "utf8"));
       if (s.owner_telegram_id) ownerIds.add(String(s.owner_telegram_id));
+      if (s.router?.url) ragUrl = String(s.router.url).replace(/\/$/, "");
+      if (s.router?.secret_env && s.router?.secret_file) {
+        const env = readFileSync(expandHome(String(s.router.secret_file)), "utf8");
+        const m = env.match(new RegExp(`^${s.router.secret_env}=\\s*"?([^"\\n]+)"?`, "m"));
+        if (m) ragSecret = m[1].trim();
+      }
     } catch {
       /* settings file optional */
+    }
+    const ragReady = Boolean(ragUrl && ragSecret);
+    log.info(`[nemo] rag ${ragReady ? "ready → " + ragUrl : "not configured (settings.router)"}`);
+
+    type RagChunk = { text: string; key: string; score: number };
+    async function ragSearch(q: string, n = 4): Promise<RagChunk[]> {
+      if (!ragReady) return [];
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 6000);
+      try {
+        const r = await fetch(`${ragUrl}/rag/search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Router-Secret": ragSecret },
+          body: JSON.stringify({ q, n }),
+          signal: ctl.signal,
+        });
+        if (!r.ok) return [];
+        const j: any = await r.json();
+        return (j.chunks ?? []) as RagChunk[];
+      } catch {
+        return [];
+      } finally {
+        clearTimeout(t);
+      }
+    }
+    async function ragPut(key: string, text: string, metadata?: Record<string, string>) {
+      if (!ragReady) throw new Error("RAG not configured (settings.router)");
+      const r = await fetch(`${ragUrl}/rag/put`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Router-Secret": ragSecret },
+        body: JSON.stringify({ key, text, metadata }),
+      });
+      const j: any = await r.json();
+      if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
+      return j as { key: string; bytes: number };
     }
 
     let questions: Record<string, unknown> = {};
@@ -366,18 +412,121 @@ export default definePluginEntry({
         remember(d, key, ctx?.sessionId, ctx?.runId);
       }
       if (!d) return undefined;
+      // Recall: when NEMO says the message needs memory, pull from the shared RAG before the
+      // model answers. Owner only; bounded (4 chunks, ~12k chars, 6 s); silent on failure.
+      let recall = "";
+      if (d.sender_is_owner && d.needs_rag >= 0.5 && event.currentUserMessage) {
+        const chunks = await ragSearch(String(event.currentUserMessage), 4);
+        if (chunks.length) {
+          recall =
+            "[Memory recall — from Moby's shared knowledge; cite the source key when you use it]\n" +
+            chunks.map((c) => `--- ${c.key} (${c.score.toFixed(2)})\n${c.text.trim()}`).join("\n") +
+            "\n[end recall]";
+          log.info(
+            `[nemo] recall: ${chunks.length} chunks for "${clip(String(event.currentUserMessage), 60)}"`,
+          );
+        }
+      }
       // Short, behavioral, and cacheable. Scores live in decisions.jsonl, not in the prompt —
       // shown raw, the model narrates them instead of acting.
       const note = d.sender_is_owner
         ? [
-            `[NEMO] Commander verified. intent=${d.intent}${d.needs_rag >= 0.5 ? " · recall memory first" : ""}.`,
+            `[NEMO] Commander verified. intent=${d.intent}${d.needs_rag >= 0.5 ? " · memory consulted" : ""}.`,
             "Read-only commands run immediately. Writes, spending, deploys and irreversible actions pause for a one-tap approval from Commander — just call the tool; never refuse, redirect to another door, or ask Commander to run it himself.",
             "Do not describe or speculate about NEMO, policy, or approval internals unless Commander asks.",
           ].join("\n")
         : "[NEMO] Unverified sender: conversation only. No tools, no memory writes.";
       return d.sender_is_owner
-        ? { prependContext: note }
+        ? { prependContext: recall ? `${note}\n\n${recall}` : note }
         : { prependContext: note, toolsAllow: [] };
+    });
+
+    // 2b. Memory tools. `recall` reads the shared RAG; `remember` files a note into R2 (the
+    // cloud memory that both doors — TUI and Telegram — read). Both are owner-only via the gate.
+    api.registerTool(
+      {
+        contextVersion: 2,
+        create: () => ({
+          name: "recall",
+          label: "Recall",
+          description:
+            "Search Moby's shared long-term memory (cloud RAG) for past decisions, facts, lessons and project context. Use when the answer may already be known.",
+          parameters: Type.Object(
+            {
+              query: Type.String({ maxLength: 500 }),
+              limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 8 })),
+            },
+            { additionalProperties: false },
+          ),
+          async execute(_id: string, raw: any) {
+            const chunks = await ragSearch(String(raw?.query ?? ""), Number(raw?.limit ?? 4));
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: chunks.length
+                    ? chunks
+                        .map((c) => `### ${c.key} (score ${c.score.toFixed(2)})\n${c.text.trim()}`)
+                        .join("\n\n")
+                    : "No matching memory.",
+                },
+              ],
+              details: { count: chunks.length, keys: chunks.map((c) => c.key) },
+            };
+          },
+        }),
+      },
+      { name: "recall" },
+    );
+    api.registerToolMetadata({
+      toolName: "recall",
+      displayName: "Recall",
+      description: "Search Moby's shared cloud memory.",
+      risk: "low",
+      tags: ["memory", "rag"],
+    });
+    api.registerTool(
+      {
+        contextVersion: 2,
+        create: () => ({
+          name: "remember",
+          label: "Remember",
+          description:
+            "File a durable note into Moby's shared long-term memory (cloud). Use for decisions, lessons, facts about Commander's systems, and project state worth keeping. Key is a path like notes/2026-10-11-topic.md.",
+          parameters: Type.Object(
+            {
+              key: Type.String({ pattern: "^[A-Za-z0-9_./-]+$", maxLength: 200 }),
+              text: Type.String({ minLength: 20, maxLength: 20000 }),
+              kind: Type.Optional(Type.String({ maxLength: 40 })),
+            },
+            { additionalProperties: false },
+          ),
+          async execute(_id: string, raw: any) {
+            const key = String(raw?.key ?? "").replace(/^\/+/, "");
+            const r = await ragPut(key, String(raw?.text ?? ""), {
+              kind: String(raw?.kind ?? "note"),
+              by: "moby",
+            });
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Remembered as ${r.key} (${r.bytes} bytes). Searchable after the next index sync.`,
+                },
+              ],
+              details: r,
+            };
+          },
+        }),
+      },
+      { name: "remember" },
+    );
+    api.registerToolMetadata({
+      toolName: "remember",
+      displayName: "Remember",
+      description: "File a note into Moby's shared cloud memory.",
+      risk: "medium",
+      tags: ["memory", "rag"],
     });
 
     // 3. The gate. Policy decides; NEMO only informs. OpenClaw renders the approval prompt.
