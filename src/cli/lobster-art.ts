@@ -7,9 +7,14 @@ import { isLobsterDay, lobsterDayHash } from "../shared/lobster-day.js";
 
 const LOBSTER_ARTS: readonly string[] = [
   // Claws up, saying hi.
-  ["  (\\/)  (\\/)", "   \\_\\  /_/", "    ( o.o )", "    /|__|\\"].join("\n"),
+  [
+    '      .-"""-.    __',
+    "     /  o    \\__/ /",
+    "     \\______/   \\_\\",
+    "  ~~~~~~~~~~~~~~~~~~",
+  ].join("\n"),
   // Just the eyestalks, watching from below the waterline.
-  ["     o   o", "     )   (", "  ~~~~~~~~~~~"].join("\n"),
+  ["        .:.", "       ( o )  ~", "  ~~~~~~~~~~~~~~"].join("\n"),
 ] as const;
 
 /**

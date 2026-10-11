@@ -1,4 +1,4 @@
-// Shared OpenClaw banner: the dot-matrix lobster mascot beside the OPENCLAW
+// Shared MOBY-D banner: the dot-matrix whale mascot beside the MOBY-D
 // wordmark, with a short startup animation on rich interactive terminals.
 // Used by the wizard flows (doctor/onboard/configure) and the foreground
 // gateway run; non-TTY and CI paths always get the plain static banner.
@@ -14,30 +14,30 @@ import { sleep as defaultSleep } from "../utils/sleep.js";
 // Mascot and wordmark are separate so they can be tinted independently; the
 // wordmark starts on mascot row 3, keeping the claws above the text line.
 const MASCOT_ART = [
-  " •●●:.        .:●●•",
-  ":●●●●:        :●●●●:",
-  ".●●●●:.:•●●•:.:●●●●.",
-  " .●●●: •●●●●• :●●●.",
-  " ..:••●●●●●●●●••:..",
-  ".::••••●●●●●●••••::.",
-  " . .:  •●●●●•  :. .",
-  "    .  :●●●●:  .",
-  "      .●●●●●●.",
-  "       :••••:",
+  "                 .• ",
+  "   .:•●●●●●•:.   •● ",
+  " .●●●●●●●●●●●●•. ●●•",
+  ":●●●●●●●●●●●●●●●●●●:",
+  "●●●●●●●●●●●●●●●●●●• ",
+  ":●●● ●●●●●●●●●●●●•  ",
+  " •●●●●●●●●●●●●●•:   ",
+  "  .:••●●●●●●••:.    ",
+  "      .:••:.        ",
+  "                    ",
 ] as const;
 // Claw tips with the pincer notch widened; swapping the top two rows in and
 // out produces the "snip".
-const MASCOT_OPEN_ROWS = ["•●•.:.        .:.•●•", ":●●●•:        :•●●●:"] as const;
+const MASCOT_OPEN_ROWS = ["                 •● ", "   .:•●●●●●•:.  .●● "] as const;
 const MASCOT_WIDTH = 20;
 const WORDMARK_ROW_OFFSET = 3;
 
 const WORDMARK_ART = [
-  "█▀▀▀█ █▀▀▀█ █▀▀▀▀ █▄  █ █▀▀▀▀ █     █▀▀▀█ █   █",
-  "█   █ █▀▀▀▀ █▀▀▀  █ ▀▄█ █     █     █▀▀▀█ █▄▀▄█",
-  "▀▀▀▀▀ ▀     ▀▀▀▀▀ ▀   ▀ ▀▀▀▀▀ ▀▀▀▀▀ ▀   ▀ ▀   ▀",
+  "█▄ ▄█ █▀▀▀█ █▀▀▀▄ █   █       █▀▀▀▄",
+  "█ ▀ █ █   █ █▀▀▀▄  ▀▄▀   ▀▀▀  █   █",
+  "▀   ▀ ▀▀▀▀▀ ▀▀▀▀    ▀         ▀▀▀▀ ",
 ] as const;
 const GAP = 3;
-const BANNER_WIDTH = MASCOT_WIDTH + GAP + 48;
+const BANNER_WIDTH = MASCOT_WIDTH + GAP + WORDMARK_ART[0].length;
 const ROWS = MASCOT_ART.length;
 
 type ClawBannerOptions = {
@@ -88,7 +88,7 @@ function composeFrame(params: {
 }
 
 function plainTitleLine(): string {
-  const icon = decorativeEmoji("🦞");
+  const icon = decorativeEmoji("🐋");
   return supportsDecorativeEmoji() && icon ? `${icon} OPENCLAW ${icon}` : "OPENCLAW";
 }
 

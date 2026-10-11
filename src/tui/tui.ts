@@ -965,7 +965,7 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
       sessionRestore.provisionalSessionKey ?? state.currentSessionKey,
     );
     const agentLabel = formatAgentLabel(state.currentAgentId);
-    const title = opts.title ?? "openclaw tui";
+    const title = opts.title ?? "MOBY-D tui";
     const text = `${title} - ${client.connection.url} - agent ${agentLabel} - session ${sessionLabel}`;
     header.setText(theme.header(sanitizeRenderableLine(text)));
   };

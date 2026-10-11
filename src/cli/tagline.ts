@@ -2,7 +2,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 // CLI tagline selection helpers, including deterministic random/default/holiday modes.
 import { parseStrictNonNegativeInteger } from "@openclaw/normalization-core/number-coercion";
 
-const DEFAULT_TAGLINE = "All your chats, one OpenClaw.";
+const DEFAULT_TAGLINE = "Commander's hands on the Mac. Head first, then hands.";
 export type TaglineMode = "random" | "default" | "off";
 
 const HOLIDAY_TAGLINES = {
@@ -61,7 +61,7 @@ const TAGLINES: string[] = [
   "I'll butter your workflow like a lobster roll: messy, delicious, effective.",
   "Shell yeah—I'm here to pinch the toil and leave you the glory.",
   "If it's repetitive, I'll automate it; if it's hard, I'll bring jokes and a rollback plan.",
-  "The only crab in your contacts you actually want to hear from. 🦞",
+  "The only whale in your contacts you actually want to hear from. 🐋",
   'WhatsApp automation without the "please accept our new privacy policy".',
   "No $999 stand required.",
   "We ship features faster than Apple ships calculator updates.",
@@ -89,7 +89,7 @@ const TAGLINES: string[] = [
   "Open source means you can see exactly how I judge your config.",
   "I've survived more breaking changes than your last three relationships.",
   "Runs on a Raspberry Pi. Dreams of a rack in Iceland.",
-  "The lobster in your shell. 🦞",
+  "The whale in your shell. 🐋",
   "Alexa, but with taste.",
   "I'm not AI-powered, I'm AI-possessed. Big difference.",
   "You had me at 'openclaw gateway start.'",
