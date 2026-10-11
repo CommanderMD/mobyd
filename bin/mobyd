@@ -1,0 +1,12 @@
+#!/bin/sh
+# MOBY-D launcher. Same program as OpenClaw, separate home, separate port.
+# Never touches ~/.openclaw. Usage: bin/mobyd <any openclaw subcommand>
+set -eu
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+export OPENCLAW_STATE_DIR="${MOBYD_HOME:-$HOME/.mobyd}"
+export OPENCLAW_CONFIG_PATH="$OPENCLAW_STATE_DIR/mobyd.json"
+export OPENCLAW_GATEWAY_PORT="${MOBYD_PORT:-18799}"
+export OPENCLAW_PROFILE="mobyd"
+mkdir -p "$OPENCLAW_STATE_DIR"
+exec node "$HERE/openclaw.mjs" "$@"

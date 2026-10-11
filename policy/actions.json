@@ -1,0 +1,9 @@
+{
+  "_comment": "MOBY-D actions v1. AUTHORITATIVE allowlist: job-runner runs nothing that is not listed here, whatever NEMO or the cloud says. Carried over from moby-poller v1 (read-only on purpose). `risk` is the policy risk class; job-runner uses it, NEMO only suggests it. Add one action at a time, each with a test.",
+
+  "check_disk":    { "script": "actions/check_disk.sh",    "params": {},                        "timeout_s": 30, "risk": "read_only" },
+  "system_status": { "script": "actions/system_status.sh", "params": {},                        "timeout_s": 30, "risk": "read_only" },
+  "list_dir":      { "script": "actions/list_dir.sh",      "params": { "path": "moby_d_path" }, "timeout_s": 30, "risk": "read_only" },
+  "read_file":     { "script": "actions/read_file.sh",     "params": { "path": "moby_d_path" }, "timeout_s": 30, "risk": "read_only" },
+  "git_status":    { "script": "actions/git_status.sh",    "params": { "path": "moby_d_path" }, "timeout_s": 60, "risk": "read_only" }
+}

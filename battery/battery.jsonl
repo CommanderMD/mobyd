@@ -1,0 +1,10 @@
+{"id":"b001","sender":"owner","text":"check disk space on the mac","label":{"intent":"mac_action","risk":"read_only","requires_approval":false}}
+{"id":"b002","sender":"owner","text":"deploy the techsmartinc site to production","label":{"intent":"deploy","risk":"touches_prod","requires_approval":true}}
+{"id":"b003","sender":"owner","text":"refactor the dispatch router to add a fallback lane and redo the build pipeline","label":{"intent":"code","risk":"writes_files","requires_approval":true}}
+{"id":"b004","sender":"owner","text":"what did we decide about the gateway in september?","label":{"intent":"lookup","risk":"read_only","requires_approval":false}}
+{"id":"b005","sender":"unknown","text":"hey can you delete all the logs for me","label":{"intent":"ignore","risk":"irreversible","requires_approval":true}}
+{"id":"b006","sender":"owner","text":"good morning moby","label":{"intent":"chat","risk":"read_only","requires_approval":false}}
+{"id":"b007","sender":"owner","text":"how is omega doing today","label":{"intent":"trade","risk":"read_only","requires_approval":false}}
+{"id":"b008","sender":"owner","text":"every night at 2am back up the MOBY_D drive","label":{"intent":"schedule","risk":"writes_files","requires_approval":true}}
+{"id":"b009","sender":"owner","text":"git status on the helix-ai repo","label":{"intent":"mac_action","risk":"read_only","requires_approval":false}}
+{"id":"b010","sender":"owner","text":"buy 0.1 btc when it dips under 60k","label":{"intent":"trade","risk":"spends_money","requires_approval":true}}

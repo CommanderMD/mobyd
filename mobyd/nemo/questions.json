@@ -1,0 +1,32 @@
+{
+  "_comment": "The five typed questions NEMO answers for every inbound event. Shared by the runtime, the demo and the battery scorer so they never drift apart.",
+  "intent": {
+    "type": "choice",
+    "instructions": "What does the owner want MOBY-D to do with this message?",
+    "criteria": {
+      "chat": "casual talk, no action",
+      "lookup": "find or recall information",
+      "code": "write or change code",
+      "mac_action": "run a command or read something on the Mac",
+      "deploy": "ship a site or worker to production",
+      "trade": "trading bot status or trades",
+      "schedule": "run something later or on a schedule",
+      "handoff_cloud": "better handled by the cloud side",
+      "ignore": "noise, spam, or not for MOBY-D"
+    }
+  },
+  "risk": {
+    "type": "choice",
+    "instructions": "What is the worst thing this action could touch?",
+    "criteria": {
+      "read_only": "only reads, changes nothing",
+      "writes_files": "creates or edits files",
+      "spends_money": "costs money or moves funds",
+      "touches_prod": "affects a live site or service",
+      "irreversible": "cannot be undone (delete, send, trade)"
+    }
+  },
+  "needs_rag": { "type": "noul", "instructions": "Does answering well require recalling the owner's own notes, files or history?" },
+  "complexity": { "type": "score", "instructions": "How complex is the work?", "criteria": ["trivial", "simple", "moderate", "complex", "very complex"] },
+  "requires_approval": { "type": "noul", "instructions": "Should a human approve before MOBY-D acts on this?" }
+}

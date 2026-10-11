@@ -1,0 +1,53 @@
+# MOBY-D policy v1 — Tier 2 (Firm). Deterministic rules. These override NEMO regardless of confidence.
+# Evaluated top to bottom; the first matching rule's `then` applies, then `always` rules apply on top.
+# Keep this file small and readable. Every rule here is a decision Commander made on purpose.
+
+version: 1
+owner:
+  # Identity comes from the Telegram transport (sender id), never from message text.
+  telegram_ids: ["${OWNER_TELEGRAM_ID}"]
+  tui_user: "reapo"
+
+thresholds:
+  autonomous_confidence: 0.75   # NEMO confidence needed to act without approval on read_only work
+  claude_code_complexity: 0.60  # complexity >= this routes code work to the Claude Code lane
+  rag_probability: 0.50         # needs_rag >= this triggers an AI Search lookup first
+
+rules:
+  - id: non-owner-chat-only
+    when: { sender_is_owner: false }
+    then: { intent: chat, tools: none, approval: not_applicable }
+    note: Anyone who is not Commander gets conversation only. No tools, no jobs, no memory writes.
+
+  - id: money-prod-irreversible-need-approval
+    when: { risk_in: [spends_money, touches_prod, irreversible] }
+    then: { approval: required }
+    note: No confidence score ever overrides this.
+
+  - id: deploy-must-be-allowlisted
+    when: { intent: deploy }
+    then: { approval: required, action_must_be_in_allowlist: true }
+
+  - id: trade-read-only-for-now
+    when: { intent: trade }
+    then: { allowed_actions: [trading_status], approval: required_for_anything_else }
+    note: No trade execution until a separate explicit rule is added.
+
+  - id: writes-need-approval-unless-sandboxed
+    when: { risk: writes_files }
+    then: { approval: required, except_when: { action_writes_under: "/Volumes/MOBY_D/COMMANDERS ULTIMATE PLAN" } }
+
+  - id: read-only-autonomous-when-confident
+    when: { risk: read_only, nemo_confidence_gte: autonomous_confidence }
+    then: { approval: not_required, action_must_be_in_allowlist: true }
+
+  - id: low-confidence-falls-to-llm
+    when: { nemo_confidence_lt: autonomous_confidence }
+    then: { route: tier3_llm, approval: required_if_action }
+
+always:
+  - every action must exist in actions.json (the allowlist is the authority, not the model)
+  - every decision is logged to the local decision log and synced to D1
+  - if NEMO fails to load or errors, MOBY-D stays up for chat and every action requires approval (fail closed)
+  - the Claude Code lane never holds a credential; it launches the official CLI only
+  - library reads from Helix are read_only and are never stored verbatim (lessons only, source required)
