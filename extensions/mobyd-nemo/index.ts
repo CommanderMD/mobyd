@@ -31,6 +31,125 @@ const RISKY_TOOL =
 const READONLY_TOOL =
   /^(read|list|search|find|get|stat|glob|grep|memory|recall|fetch|browse|view|status|time|calc)/i;
 
+// Command-level read-only classifier. NEMO's risk score is advisory; what actually
+// runs is what we judge. Every pipeline segment must start with an allowlisted
+// binary and the whole string must be free of write/privilege operators.
+const READONLY_BIN = new Set([
+  "df",
+  "du",
+  "ls",
+  "cat",
+  "head",
+  "tail",
+  "wc",
+  "stat",
+  "file",
+  "find",
+  "grep",
+  "rg",
+  "egrep",
+  "pwd",
+  "whoami",
+  "id",
+  "uname",
+  "uptime",
+  "date",
+  "hostname",
+  "sw_vers",
+  "system_profiler",
+  "ps",
+  "top",
+  "lsof",
+  "netstat",
+  "ifconfig",
+  "ping",
+  "nslookup",
+  "dig",
+  "which",
+  "type",
+  "env",
+  "printenv",
+  "echo",
+  "printf",
+  "true",
+  "sort",
+  "uniq",
+  "cut",
+  "awk",
+  "sed",
+  "tr",
+  "jq",
+  "xargs",
+  "diff",
+  "cmp",
+  "md5",
+  "shasum",
+  "base64",
+  "wc",
+  "tree",
+  "ioreg",
+  "sysctl",
+  "vm_stat",
+  "diskutil",
+  "git",
+  "node",
+  "python3",
+  "pnpm",
+  "npm",
+  "wrangler",
+]);
+const READONLY_SUBCMD: Record<string, RegExp> = {
+  git: /^(status|log|diff|show|branch|remote|rev-parse|ls-files|describe|tag|stash list|config --get)/,
+  node: /^(-v|--version)/,
+  python3: /^(-V|--version)/,
+  pnpm: /^(-v|--version|ls|list|why)/,
+  npm: /^(-v|--version|ls|view|outdated)/,
+  wrangler:
+    /^(whoami|--version|d1 list|kv namespace list|r2 bucket list|secret list|deployments list)/,
+  diskutil: /^(list|info)/,
+  sed: /^(?![^|]*\s-i)/,
+  xargs: /^(ls|cat|wc|grep|head|tail|stat|file)\b/,
+};
+const WRITE_OPERATORS =
+  /(>>?|\bsudo\b|\brm\b|\bmv\b|\bcp\b|\btee\b|\bchmod\b|\bchown\b|\bkill\b|\bpkill\b|\bcurl\b|\bwget\b|\bdd\b|\bmkfs|\bbrew\b|\bapt\b|\bsh -c\b|\bbash -c\b|\beval\b|\bexec\b|\$\(|`|\bosascript\b|\blaunchctl\b|\bdefaults write\b|\bkillall\b|\bopen\b)/;
+
+function commandsFromParams(params: any): string[] {
+  const out: string[] = [];
+  const grab = (v: unknown) => {
+    if (typeof v === "string" && v.trim()) out.push(v);
+  };
+  if (!params || typeof params !== "object") return out;
+  grab(params.command);
+  grab(params.cmd);
+  grab(params.script);
+  if (typeof params.code === "string") {
+    // code-mode: exec({ command: "..." }) or execSync('...') wrappers
+    for (const m of params.code.matchAll(
+      /(?:exec\s*\(\s*\{\s*command\s*:|execSync\s*\(|exec\s*\()\s*(["'`])([\s\S]*?)\1/g,
+    ))
+      out.push(m[2]);
+    if (out.length === 0 && /child_process|exec\s*\(/.test(params.code)) out.push("__opaque__");
+  }
+  return out;
+}
+
+function isReadOnlyCommand(cmd: string): boolean {
+  if (cmd === "__opaque__") return false;
+  cmd = cmd.replace(/2>\s*(\/dev\/null|&1)/g, " ");
+  if (WRITE_OPERATORS.test(cmd)) return false;
+  const segments = cmd
+    .split(/\|\||&&|\||;|\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (segments.length === 0) return false;
+  return segments.every((seg) => {
+    const [bin, ...rest] = seg.replace(/^\s*(env\s+)?([A-Z_]+=\S+\s+)*/, "").split(/\s+/);
+    if (!READONLY_BIN.has(bin)) return false;
+    const sub = READONLY_SUBCMD[bin];
+    return sub ? sub.test(rest.join(" ")) : true;
+  });
+}
+
 function expandHome(p: string) {
   return p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
 }
@@ -133,9 +252,15 @@ export default definePluginEntry({
       senderId: string | undefined,
       channel: string,
     ): Promise<Decision> {
-      const sender_is_owner = senderId
-        ? ownerIds.has(String(senderId))
-        : channel === "tui" || channel === "cli";
+      // Local doors (TUI/CLI/webchat) sit behind the gateway token on Commander's Mac:
+      // whoever is typing there is Commander. Remote channels must prove it by sender id.
+      const LOCAL_CHANNEL = /^(tui|cli|webchat|web|local)$/i;
+      const sender_is_owner =
+        LOCAL_CHANNEL.test(channel) || sessionKey.includes(":tui-")
+          ? true
+          : senderId
+            ? ownerIds.has(String(senderId))
+            : false;
       const base = {
         ts: new Date().toISOString(),
         sessionKey,
@@ -207,19 +332,15 @@ export default definePluginEntry({
       if (!d && event.currentUserMessage)
         d = await decide(key, String(event.currentUserMessage), undefined, "tui");
       if (!d) return undefined;
-      const note = [
-        "[NEMO verdict for this message]",
-        `intent=${d.intent} (${(d.intent_p * 100).toFixed(0)}%) · risk=${d.risk} · complexity=${d.complexity.toFixed(2)} · needs_memory=${d.needs_rag >= 0.5 ? "yes" : "no"}`,
-        `policy: ${d.policy_rule} → ${d.outcome}${d.nemo_offline ? " (NEMO offline, fail-closed)" : ""}`,
-        d.outcome === "approval_required"
-          ? "Any tool that writes, spends, deploys or cannot be undone will ask Commander first."
-          : "",
-        !d.sender_is_owner
-          ? "Sender is not Commander: conversation only, no tools, no memory writes."
-          : "",
-      ]
-        .filter(Boolean)
-        .join("\n");
+      // Short, behavioral, and cacheable. Scores live in decisions.jsonl, not in the prompt —
+      // shown raw, the model narrates them instead of acting.
+      const note = d.sender_is_owner
+        ? [
+            `[NEMO] Commander verified. intent=${d.intent}${d.needs_rag >= 0.5 ? " · recall memory first" : ""}.`,
+            "Read-only commands run immediately. Writes, spending, deploys and irreversible actions pause for a one-tap approval from Commander — just call the tool; never refuse, redirect to another door, or ask Commander to run it himself.",
+            "Do not describe or speculate about NEMO, policy, or approval internals unless Commander asks.",
+          ].join("\n")
+        : "[NEMO] Unverified sender: conversation only. No tools, no memory writes.";
       return d.sender_is_owner
         ? { prependContext: note }
         : { prependContext: note, toolsAllow: [] };
@@ -231,12 +352,19 @@ export default definePluginEntry({
       const d = decisions.get(key);
       const tool = String(event.toolName ?? "");
       const declared = actions[tool]?.risk;
+      const cmds = commandsFromParams(event.params);
+      const cmdReadOnly = cmds.length > 0 && cmds.every(isReadOnlyCommand);
       const readOnly =
         declared === "read_only" ||
-        (!declared && READONLY_TOOL.test(tool) && !RISKY_TOOL.test(tool));
+        cmdReadOnly ||
+        (!declared && cmds.length === 0 && READONLY_TOOL.test(tool) && !RISKY_TOOL.test(tool));
       if (d && !d.sender_is_owner)
         return { block: true, blockReason: "NEMO: tools are for Commander only." };
-      if (readOnly) return undefined;
+      if (readOnly) {
+        if (cmdReadOnly)
+          log.info(`[nemo] read-only command passed: ${clip(cmds.join(" | "), 120)}`);
+        return undefined;
+      }
       const sandboxed =
         Array.isArray(event.derivedPaths) &&
         event.derivedPaths.length > 0 &&
