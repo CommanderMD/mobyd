@@ -213,10 +213,14 @@ export default definePluginEntry({
           body: JSON.stringify({ q, n }),
           signal: ctl.signal,
         });
-        if (!r.ok) return [];
+        if (!r.ok) {
+          log.warn(`[nemo] rag search HTTP ${r.status}`);
+          return [];
+        }
         const j: any = await r.json();
         return (j.chunks ?? []) as RagChunk[];
-      } catch {
+      } catch (e) {
+        log.warn(`[nemo] rag search failed: ${String((e as Error)?.message ?? e).slice(0, 100)}`);
         return [];
       } finally {
         clearTimeout(t);
@@ -420,10 +424,18 @@ export default definePluginEntry({
       const MEMORY_QUESTION =
         /\b(what|when|where|which|how|who|why)\b.{0,40}\b(did|have|had|was|were) (we|you|i)\b|\b(remember|recall|last time|previously|earlier|decided|decision|agreed|locked in|on record)\b/i;
       let recall = "";
-      const msgText = event.currentUserMessage ? String(event.currentUserMessage) : "";
+      // Telegram hands the text to message_received, not always to before_prompt_build;
+      // fall back to the decision's own preview so recall still has a query.
+      const msgText = event.currentUserMessage
+        ? String(event.currentUserMessage)
+        : (d.text_preview ?? "");
       const wantsMemory = d.needs_rag >= 0.5 || MEMORY_QUESTION.test(msgText);
       if (d.sender_is_owner && wantsMemory && msgText) {
+        log.info(
+          `[nemo] recall attempt (needs_rag=${d.needs_rag.toFixed(2)}, phrase=${MEMORY_QUESTION.test(msgText)}) for "${clip(msgText, 60)}"`,
+        );
         const chunks = await ragSearch(msgText, 4);
+        if (!chunks.length) log.info("[nemo] recall: 0 chunks");
         if (chunks.length) {
           recall =
             "[Memory recall — from Moby's shared knowledge; cite the source key when you use it]\n" +
@@ -440,6 +452,7 @@ export default definePluginEntry({
         ? [
             `[NEMO] Commander verified. intent=${d.intent}${wantsMemory ? (recall ? " · memory consulted (see recall below)" : " · memory consulted: nothing on record — say so; do not guess or substitute a default") : ""}.`,
             "Read-only commands run immediately. Writes, spending, deploys and irreversible actions pause for a one-tap approval from Commander — just call the tool; never refuse, redirect to another door, or ask Commander to run it himself.",
+            "Report only actions whose tool call actually ran this turn; if a write needs approval, say so and wait. Never claim a file was updated or a lesson filed unless the tool returned success.",
             "Do not describe or speculate about NEMO, policy, or approval internals unless Commander asks.",
           ].join("\n")
         : "[NEMO] Unverified sender: conversation only. No tools, no memory writes.";
