@@ -6,22 +6,46 @@
 //   mobymail read <id>                  one message, text body (read-only)
 //   mobymail search "<query>" [--n 10]  (read-only)
 //   mobymail send --to a@b.c --subject "..." --body "..." [--cc x@y.z]   (hard stop: sends to a human)
-// Tokens: ~/.mobyd/secrets/ms-graph.json (0600). Refresh token only; access tokens are re-minted.
+// Tokens: ~/.mobyd/secrets/ms-graph.<account>.json (0600), one per mailbox. --account <address> picks one;
+// settings.mail.default otherwise. Refresh token only; access tokens are re-minted.
 // No secrets in this file: a public client has none. Client/tenant ids from ~/.mobyd/mobyd-settings.json.
 import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 const SETTINGS = join(homedir(), ".mobyd/mobyd-settings.json");
-const TOKENS = join(homedir(), ".mobyd/secrets/ms-graph.json");
+const SECRETS_DIR = join(homedir(), ".mobyd/secrets");
+// One token file per mailbox: ms-graph.<account>.json. --account picks one; settings.mail.default otherwise.
+function tokenPath(acct) {
+  return join(
+    SECRETS_DIR,
+    `ms-graph.${String(acct)
+      .toLowerCase()
+      .replace(/[^a-z0-9@._-]/g, "_")}.json`,
+  );
+}
 const SCOPES =
   "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/User.Read offline_access";
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
 const settings = JSON.parse(readFileSync(SETTINGS, "utf8"));
-const { client_id, tenant_id, account } = settings.mail ?? {};
+const { client_id, tenant_id } = settings.mail ?? {};
 if (!client_id || !tenant_id)
   die("settings.mail.client_id / tenant_id missing in ~/.mobyd/mobyd-settings.json");
+const ACCOUNTS = settings.mail?.accounts ?? (settings.mail?.account ? [settings.mail.account] : []);
+function pickAccount() {
+  const i = process.argv.indexOf("--account");
+  const want = i > -1 ? process.argv[i + 1] : (settings.mail?.default ?? ACCOUNTS[0]);
+  if (!want) die("no mailbox configured — run: mobymail login --account <address>");
+  const match = ACCOUNTS.find(
+    (a) =>
+      a.toLowerCase() === String(want).toLowerCase() ||
+      a.toLowerCase().includes(String(want).toLowerCase()),
+  );
+  return match ?? String(want);
+}
+const ACCOUNT = pickAccount();
+const TOKENS = tokenPath(ACCOUNT);
 const AUTH = `https://login.microsoftonline.com/${tenant_id}/oauth2/v2.0`;
 
 function die(msg, code = 1) {
@@ -43,24 +67,22 @@ async function form(url, data) {
   });
   return { status: r.status, json: await r.json().catch(() => ({})) };
 }
-function saveTokens(t) {
-  mkdirSync(join(homedir(), ".mobyd/secrets"), { recursive: true, mode: 0o700 });
+function saveTokens(t, acct = ACCOUNT) {
+  mkdirSync(SECRETS_DIR, { recursive: true, mode: 0o700 });
+  const path = tokenPath(acct);
   writeFileSync(
-    TOKENS,
+    path,
     JSON.stringify(
-      {
-        refresh_token: t.refresh_token,
-        account: t.account ?? account ?? null,
-        saved_at: new Date().toISOString(),
-      },
+      { refresh_token: t.refresh_token, account: acct, saved_at: new Date().toISOString() },
       null,
       2,
     ),
   );
-  chmodSync(TOKENS, 0o600);
+  chmodSync(path, 0o600);
 }
 async function accessToken() {
-  if (!existsSync(TOKENS)) die("not signed in — run: mobymail login");
+  if (!existsSync(TOKENS))
+    die(`${ACCOUNT}: not signed in — run: mobymail login --account ${ACCOUNT}`);
   const stored = JSON.parse(readFileSync(TOKENS, "utf8"));
   const { status, json } = await form(`${AUTH}/token`, {
     client_id,
@@ -112,12 +134,18 @@ async function login() {
       device_code: json.device_code,
     });
     if (t.status === 200 && t.json.access_token) {
-      saveTokens({ refresh_token: t.json.refresh_token });
       const me = await fetch(`${GRAPH}/me`, {
         headers: { Authorization: `Bearer ${t.json.access_token}` },
       }).then((r) => r.json());
-      saveTokens({ refresh_token: t.json.refresh_token, account: me.mail ?? me.userPrincipalName });
-      console.log(`signed in as ${me.mail ?? me.userPrincipalName} — tokens saved to ${TOKENS}`);
+      const real = (me.mail ?? me.userPrincipalName ?? ACCOUNT).toLowerCase();
+      saveTokens({ refresh_token: t.json.refresh_token }, real);
+      // register the mailbox in settings so --account can find it next time
+      const cur = JSON.parse(readFileSync(SETTINGS, "utf8"));
+      cur.mail.accounts = [...new Set([...(cur.mail.accounts ?? []), real])];
+      if (!cur.mail.default) cur.mail.default = real;
+      delete cur.mail.account;
+      writeFileSync(SETTINGS, JSON.stringify(cur, null, 2));
+      console.log(`signed in as ${real} — tokens saved to ${tokenPath(real)}`);
       return;
     }
     const e = t.json.error;
@@ -187,7 +215,7 @@ async function send() {
       saveToSentItems: true,
     }),
   });
-  console.log(`sent to ${to}: "${subject}"`);
+  console.log(`sent from ${ACCOUNT} to ${to}: "${subject}"`);
 }
 
 const cmd = process.argv[2];
