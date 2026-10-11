@@ -502,7 +502,7 @@ export default definePluginEntry({
         ? [
             `[NEMO] Commander verified. intent=${d.intent}${wantsMemory ? (recall ? " · memory consulted (see recall below)" : " · memory consulted: nothing on record — say so; do not guess or substitute a default") : ""}.`,
             "Read-only commands run immediately. Writes, spending, deploys and irreversible actions pause for a one-tap approval from Commander — just call the tool; never refuse, redirect to another door, or ask Commander to run it himself.",
-            "Report only actions whose tool call actually ran this turn; if a write needs approval, say so and wait. Never claim a file was updated or a lesson filed unless the tool returned success.",
+            "Report only actions whose tool call actually ran this turn; if a write needs approval, say so and wait. Never claim a file was updated or a lesson filed unless the tool returned success. Never invent a login URL, device code, one-time code or token: only relay one a tool returned this turn.",
             "Do not describe or speculate about NEMO, policy, or approval internals unless Commander asks.",
           ].join("\n")
         : "[NEMO] Unverified sender: conversation only. No tools, no memory writes.";
