@@ -1,0 +1,19 @@
+{
+  "name": "@mobyd/nemo",
+  "version": "0.1.0",
+  "description": "NEMO — MOBY-D's head. Typed decisions (intent, risk, approval) on every message before any hand moves.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@receptron/laya": "0.1.2",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "@openclaw/plugin-sdk": "workspace:*",
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  }
+}
