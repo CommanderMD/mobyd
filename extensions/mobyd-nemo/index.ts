@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 // Every inbound message becomes a typed decision (intent, risk, needs_rag, complexity, requires_approval)
 // before the model sees it and before any tool runs. Policy (policy/mobyd-policy.yaml) overrides NEMO.
 // Fail closed: if NEMO cannot load, chat still works but every tool call needs Commander's approval.
-import { existsSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
@@ -561,6 +561,48 @@ export default definePluginEntry({
       description: "File a note into Moby's shared cloud memory.",
       risk: "medium",
       tags: ["memory", "rag"],
+    });
+
+    // Diagnostic: record what the model actually receives (system prompt, tools, history sizes)
+    // so the prompt diet is measured, not guessed. Writes ~/.mobyd/prompt-audit/latest.json.
+    api.on("llm_input", (event: any) => {
+      try {
+        const dir = expandHome("~/.mobyd/prompt-audit");
+        mkdirSync(dir, { recursive: true });
+        const sys = String(event.systemPrompt ?? "");
+        const tools = (event.tools ?? []) as unknown[];
+        const toolsJson = JSON.stringify(tools);
+        const history = JSON.stringify(event.historyMessages ?? []);
+        const est = (t: string) => Math.round(t.length / 4);
+        const sections: Record<string, number> = {};
+        for (const m of sys.matchAll(/^(#{1,3}\s+.+|<[a-z_-]+>)$/gm)) {
+          const title = m[1].slice(0, 60);
+          sections[title] = (sections[title] ?? 0) + 1;
+        }
+        const audit = {
+          ts: new Date().toISOString(),
+          provider: event.provider,
+          model: event.model,
+          est_tokens: {
+            system: est(sys),
+            tools: est(toolsJson),
+            history: est(history),
+            prompt: est(String(event.prompt ?? "")),
+          },
+          chars: { system: sys.length, tools: toolsJson.length, history: history.length },
+          tool_count: tools.length,
+          tool_names: tools.map((t: any) => t?.name ?? t?.function?.name).filter(Boolean),
+          history_messages: (event.historyMessages ?? []).length,
+        };
+        writeFileSync(join(dir, "latest.json"), JSON.stringify(audit, null, 2));
+        writeFileSync(join(dir, "system-prompt.txt"), sys);
+        writeFileSync(join(dir, "tools.json"), toolsJson);
+        log.info(
+          `[nemo] prompt audit: system≈${audit.est_tokens.system}t tools≈${audit.est_tokens.tools}t (${tools.length}) history≈${audit.est_tokens.history}t`,
+        );
+      } catch (e) {
+        log.warn(`[nemo] prompt audit failed: ${String((e as Error)?.message ?? e).slice(0, 100)}`);
+      }
     });
 
     // 3. The gate. Policy decides; NEMO only informs. OpenClaw renders the approval prompt.
