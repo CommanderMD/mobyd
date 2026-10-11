@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 // NEMO — the head of MOBY-D.
 // Every inbound message becomes a typed decision (intent, risk, needs_rag, complexity, requires_approval)
 // before the model sees it and before any tool runs. Policy (policy/mobyd-policy.yaml) overrides NEMO.
@@ -414,9 +415,15 @@ export default definePluginEntry({
       if (!d) return undefined;
       // Recall: when NEMO says the message needs memory, pull from the shared RAG before the
       // model answers. Owner only; bounded (4 chunks, ~12k chars, 6 s); silent on failure.
+      // NEMO's needs_rag under-fires on plain memory questions ("what did we decide…"),
+      // so a small phrase heuristic sits beside it. Either one triggers recall.
+      const MEMORY_QUESTION =
+        /\b(what|when|where|which|how|who|why)\b.{0,40}\b(did|have|had|was|were) (we|you|i)\b|\b(remember|recall|last time|previously|earlier|decided|decision|agreed|locked in|on record)\b/i;
       let recall = "";
-      if (d.sender_is_owner && d.needs_rag >= 0.5 && event.currentUserMessage) {
-        const chunks = await ragSearch(String(event.currentUserMessage), 4);
+      const msgText = event.currentUserMessage ? String(event.currentUserMessage) : "";
+      const wantsMemory = d.needs_rag >= 0.5 || MEMORY_QUESTION.test(msgText);
+      if (d.sender_is_owner && wantsMemory && msgText) {
+        const chunks = await ragSearch(msgText, 4);
         if (chunks.length) {
           recall =
             "[Memory recall — from Moby's shared knowledge; cite the source key when you use it]\n" +
@@ -431,7 +438,7 @@ export default definePluginEntry({
       // shown raw, the model narrates them instead of acting.
       const note = d.sender_is_owner
         ? [
-            `[NEMO] Commander verified. intent=${d.intent}${d.needs_rag >= 0.5 ? " · memory consulted" : ""}.`,
+            `[NEMO] Commander verified. intent=${d.intent}${wantsMemory ? (recall ? " · memory consulted (see recall below)" : " · memory consulted: nothing on record — say so; do not guess or substitute a default") : ""}.`,
             "Read-only commands run immediately. Writes, spending, deploys and irreversible actions pause for a one-tap approval from Commander — just call the tool; never refuse, redirect to another door, or ask Commander to run it himself.",
             "Do not describe or speculate about NEMO, policy, or approval internals unless Commander asks.",
           ].join("\n")
@@ -507,11 +514,27 @@ export default definePluginEntry({
               kind: String(raw?.kind ?? "note"),
               by: "moby",
             });
+            // Kick an index job so the note is searchable in seconds, not on the 6 h schedule.
+            // Uses the Mac's wrangler login; fire-and-forget; Cloudflare allows one per 30 s.
+            execFile(
+              "npx",
+              ["wrangler", "ai-search", "jobs", "create", "mobyd-shared"],
+              {
+                cwd: expandHome("~/.mobyd"),
+                env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH ?? ""}` },
+                timeout: 60_000,
+              },
+              (err) => {
+                if (err)
+                  log.warn(`[nemo] rag sync kick failed: ${String(err.message).slice(0, 120)}`);
+                else log.info("[nemo] rag sync job kicked");
+              },
+            );
             return {
               content: [
                 {
                   type: "text",
-                  text: `Remembered as ${r.key} (${r.bytes} bytes). Searchable after the next index sync.`,
+                  text: `Remembered as ${r.key} (${r.bytes} bytes). Index sync started; searchable within a minute.`,
                 },
               ],
               details: r,
