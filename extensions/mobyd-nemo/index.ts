@@ -441,9 +441,7 @@ export default definePluginEntry({
             "[Memory recall — from Moby's shared knowledge; cite the source key when you use it]\n" +
             chunks.map((c) => `--- ${c.key} (${c.score.toFixed(2)})\n${c.text.trim()}`).join("\n") +
             "\n[end recall]";
-          log.info(
-            `[nemo] recall: ${chunks.length} chunks for "${clip(String(event.currentUserMessage), 60)}"`,
-          );
+          log.info(`[nemo] recall: ${chunks.length} chunks for "${clip(msgText, 60)}"`);
         }
       }
       // Short, behavioral, and cacheable. Scores live in decisions.jsonl, not in the prompt —
@@ -570,13 +568,31 @@ export default definePluginEntry({
       const key = String(ctx?.sessionKey ?? "default");
       const d = lookup(key, ctx?.sessionId, ctx?.runId);
       const tool = String(event.toolName ?? "");
-      const declared = actions[tool]?.risk;
-      const cmds = commandsFromParams(event.params);
+      // Code-mode wraps tool calls in exec({code}). If the code only calls Moby's own memory
+      // tools (recall/remember) and nothing else, judge it as those tools, not as a shell.
+      const codeStr = typeof event.params?.code === "string" ? event.params.code : "";
+      const MEMORY_ONLY =
+        codeStr.length > 0 &&
+        /\b(recall|remember)\s*\(/.test(codeStr) &&
+        !/\b(exec|execSync|spawn|require|import|fs\.|fetch|process\.)\b|child_process/.test(
+          codeStr,
+        );
+      const effectiveTool = MEMORY_ONLY
+        ? /\bremember\s*\(/.test(codeStr)
+          ? "remember"
+          : "recall"
+        : tool;
+      const declared = actions[effectiveTool]?.risk;
+      const declaredSandboxed = actions[effectiveTool]?.sandboxed === true;
+      const cmds = MEMORY_ONLY ? [] : commandsFromParams(event.params);
       const cmdReadOnly = cmds.length > 0 && cmds.every(isReadOnlyCommand);
       const readOnly =
         declared === "read_only" ||
         cmdReadOnly ||
-        (!declared && cmds.length === 0 && READONLY_TOOL.test(tool) && !RISKY_TOOL.test(tool));
+        (!declared &&
+          cmds.length === 0 &&
+          READONLY_TOOL.test(effectiveTool) &&
+          !RISKY_TOOL.test(effectiveTool));
       if (d && !d.sender_is_owner)
         return { block: true, blockReason: "NEMO: tools are for Commander only." };
       if (readOnly) {
@@ -592,20 +608,29 @@ export default definePluginEntry({
             p.startsWith("/Volumes/MOBY_D/COMMANDERS ULTIMATE PLAN") ||
             p.startsWith(join(homedir(), ".mobyd/workspace")),
         );
+      // Declared-sandboxed actions (e.g. `remember` → Moby's own R2 bucket) are writes with
+      // no blast radius outside Moby: they run without a tap and are logged.
+      if (declaredSandboxed && d?.sender_is_owner) {
+        log.info(`[nemo] sandboxed action passed: ${effectiveTool}`);
+        return undefined;
+      }
       const needs =
         !d ||
         d.nemo_offline ||
         d.outcome === "approval_required" ||
-        RISKY_TOOL.test(tool) ||
+        RISKY_TOOL.test(effectiveTool) ||
         !declared;
       if (!needs || (sandboxed && d?.risk === "writes_files")) return undefined;
       if (advisoryOnly) {
         log.info(`[nemo] (advisory) would require approval for ${tool}`);
         return undefined;
       }
+      log.info(
+        `[nemo] approval demanded for ${effectiveTool}${effectiveTool !== tool ? ` (via ${tool})` : ""}: ${d ? `rule=${d.policy_rule} risk=${d.risk}` : "no decision (fail-closed)"}${cmds.length ? ` cmd="${clip(cmds.join(" | "), 80)}"` : ""}`,
+      );
       return {
         requireApproval: {
-          title: `NEMO: approve ${tool}?`,
+          title: `NEMO: approve ${effectiveTool}?`,
           description: `${d ? `intent=${d.intent}, risk=${d.risk}, rule=${d.policy_rule}` : "no decision on record (fail-closed)"}\nparams: ${clip(JSON.stringify(event.params ?? {}), 300)}`,
           severity:
             d && ["spends_money", "touches_prod", "irreversible"].includes(d.risk)
