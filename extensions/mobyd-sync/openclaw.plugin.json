@@ -1,0 +1,16 @@
+{
+  "id": "mobyd-sync",
+  "name": "MOBY-D Sync (nervous system)",
+  "description": "After every turn, writes the owner's working context to Moby Cloud (D1 sessions); sends heartbeats and events. Mac → cloud only; cloud → Mac arrives with the Tunnel.",
+  "enabledByDefault": false,
+  "activation": { "onStartup": true },
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "ownerId": { "type": "string", "description": "Owner Telegram id; the sessions row key." },
+      "heartbeatMinutes": { "type": "number", "default": 5 },
+      "host": { "type": "string", "default": "erics-mac-mini" }
+    },
+    "additionalProperties": false
+  }
+}

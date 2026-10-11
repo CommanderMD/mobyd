@@ -1,0 +1,17 @@
+{
+  "name": "@mobyd/sync",
+  "version": "0.1.0",
+  "description": "MOBY-D's nervous system: keeps the cloud session record, events and heartbeats in step with the Mac (docs/SYNC_PROTOCOL.md).",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@openclaw/plugin-sdk": "workspace:*",
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
