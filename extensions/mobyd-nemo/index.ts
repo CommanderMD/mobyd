@@ -662,9 +662,91 @@ export default definePluginEntry({
       }
     });
 
+    // 2c. Receipt verifier. The model has claimed actions it never took (a log write, a
+    // lesson filed, an email sent) four times today; instructions did not stop it. So every
+    // outgoing reply is checked against the tools that actually ran this turn, and an
+    // unbacked claim is stamped visibly for Commander on every door.
+    const turnTools = new Map<string, string[]>(); // sessionKey -> evidence strings
+    function recordToolCall(key: string, event: any) {
+      const arr = turnTools.get(key) ?? [];
+      const params = event.params ?? {};
+      const code = typeof params.code === "string" ? params.code : "";
+      const cmd = typeof params.command === "string" ? params.command : "";
+      arr.push(`${String(event.toolName ?? "")} ${cmd} ${code}`.slice(0, 2000));
+      turnTools.set(key, arr);
+    }
+    const CLAIMS: Array<[RegExp, RegExp, string]> = [
+      // [what the reply claims, what must appear in this turn's tool calls, label]
+      [
+        /\b(i('ve| have)?\s+(just\s+)?(sent|emailed|dispatched)|(email|message|mail)\s+(has\s+been\s+|was\s+|is\s+)?(sent|delivered)|successfully\s+sent)\b/i,
+        /mobymail\s+send|sendMail|smtp|\bmessage\b.*\bsend|sessions_send/i,
+        "sent",
+      ],
+      [
+        /\b(i('ve| have)?\s+(just\s+)?(updated|saved|filed|wrote|written|logged|recorded|stored)|(has\s+been|was)\s+(updated|saved|filed|written|logged|stored))\b/i,
+        /\bremember\b|\bwrite\b|\bedit\b|apply_patch|>>?\s*\S|writeFile|appendFile|fs\.|tee\b|\bcat\s*<<|sed\s+-i/i,
+        "wrote",
+      ],
+      [
+        /\b(i('ve| have)?\s+(just\s+)?(deployed|published|pushed)|(has\s+been|was)\s+(deployed|published|pushed))\b/i,
+        /wrangler\s+deploy|git\s+push|npm\s+publish|pnpm\s+publish/i,
+        "deployed",
+      ],
+      [
+        /\b(i('ve| have)?\s+(just\s+)?(deleted|removed|cleaned\s+up)|(has\s+been|was)\s+(deleted|removed))\b/i,
+        /\brm\b|rmdir|unlink|trash|\bdelete\b|shred/i,
+        "deleted",
+      ],
+      [
+        /\b(i('ve| have)?\s+(just\s+)?(installed|configured|set\s+up|enabled)|(has\s+been|was)\s+(installed|configured|enabled))\b/i,
+        /\binstall\b|brew\b|npm\b|pnpm\b|pip\b|\bwrite\b|\bedit\b|>>?\s*\S|writeFile|sed\s+-i|config\b/i,
+        "configured",
+      ],
+    ];
+    function unverifiedClaims(text: string, evidence: string[]): string[] {
+      const joined = evidence.join("\n");
+      const out: string[] = [];
+      for (const [claim, proof, label] of CLAIMS) {
+        if (claim.test(text) && !proof.test(joined)) out.push(label);
+      }
+      return out;
+    }
+    api.on("message_received", (_event: any, ctx: any) => {
+      // a new inbound message starts a new turn: clear the evidence for that session
+      turnTools.set(String(ctx?.sessionKey ?? _event?.sessionKey ?? "default"), []);
+    });
+    api.on("message_sending", (event: any, ctx: any) => {
+      const key = String(ctx?.sessionKey ?? "default");
+      const text = String(event.content ?? "");
+      if (!text || text.startsWith("⚠️ Unverified")) return undefined;
+      const missing = unverifiedClaims(text, turnTools.get(key) ?? []);
+      if (!missing.length) return undefined;
+      log.warn(
+        `[nemo] receipt check: reply claims "${missing.join(", ")}" but no matching tool ran this turn (${key})`,
+      );
+      try {
+        appendFileSync(
+          decisionLog,
+          JSON.stringify({
+            ts: new Date().toISOString(),
+            sessionKey: key,
+            kind: "unverified_claim",
+            claims: missing,
+            text_preview: clip(text.replace(/\s+/g, " "), 160),
+          }) + "\n",
+        );
+      } catch {
+        /* best effort */
+      }
+      return {
+        content: `⚠️ Unverified: this reply says "${missing.join('", "')}" but no matching tool call ran this turn. Treat it as not done.\n\n${text}`,
+      };
+    });
+
     // 3. The gate. Policy decides; NEMO only informs. OpenClaw renders the approval prompt.
     api.on("before_tool_call", (event: any, ctx: any) => {
       const key = String(ctx?.sessionKey ?? "default");
+      recordToolCall(key, event);
       const d = lookup(key, ctx?.sessionId, ctx?.runId);
       const tool = String(event.toolName ?? "");
       // Code-mode wraps tool calls in exec({code}). If the code only calls Moby's own memory

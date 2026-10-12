@@ -1,0 +1,6 @@
+{
+  "name": "@mobyd/tools",
+  "private": true,
+  "type": "module",
+  "dependencies": { "imapflow": "1.0.172", "nodemailer": "7.0.6", "mailparser": "3.7.4" }
+}

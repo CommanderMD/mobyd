@@ -12,6 +12,9 @@
 import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { ImapFlow } from "imapflow";
+import { simpleParser } from "mailparser";
+import nodemailer from "nodemailer";
 
 const SETTINGS = join(homedir(), ".mobyd/mobyd-settings.json");
 const SECRETS_DIR = join(homedir(), ".mobyd/secrets");
@@ -33,6 +36,15 @@ const { client_id, tenant_id } = settings.mail ?? {};
 if (!client_id || !tenant_id)
   die("settings.mail.client_id / tenant_id missing in ~/.mobyd/mobyd-settings.json");
 const ACCOUNTS = settings.mail?.accounts ?? (settings.mail?.account ? [settings.mail.account] : []);
+// Gmail mailboxes are discovered from their secret files (gmail.<address>.json).
+try {
+  for (const f of (await import("node:fs")).readdirSync(join(homedir(), ".mobyd/secrets"))) {
+    const m = f.match(/^gmail\.(.+)\.json$/);
+    if (m && !ACCOUNTS.includes(m[1])) ACCOUNTS.push(m[1]);
+  }
+} catch {
+  /* no secrets dir yet */
+}
 function pickAccount() {
   const i = process.argv.indexOf("--account");
   const want = i > -1 ? process.argv[i + 1] : (settings.mail?.default ?? ACCOUNTS[0]);
@@ -46,6 +58,26 @@ function pickAccount() {
 }
 const ACCOUNT = pickAccount();
 const TOKENS = tokenPath(ACCOUNT);
+// Provider: a Gmail mailbox has an app-password file (written on the Mac via read -s, never via chat).
+const GMAIL_SECRET = join(SECRETS_DIR, `gmail.${ACCOUNT.toLowerCase()}.json`);
+const IS_GMAIL = existsSync(GMAIL_SECRET);
+function gmailCreds() {
+  const c = JSON.parse(readFileSync(GMAIL_SECRET, "utf8"));
+  if (!c.user || !c.app_password) die(`${ACCOUNT}: gmail secret file is incomplete`);
+  return c;
+}
+async function gmailClient() {
+  const c = gmailCreds();
+  const client = new ImapFlow({
+    host: "imap.gmail.com",
+    port: 993,
+    secure: true,
+    auth: { user: c.user, pass: c.app_password },
+    logger: false,
+  });
+  await client.connect();
+  return client;
+}
 const AUTH = `https://login.microsoftonline.com/${tenant_id}/oauth2/v2.0`;
 
 function die(msg, code = 1) {
@@ -218,15 +250,133 @@ async function send() {
   console.log(`sent from ${ACCOUNT} to ${to}: "${subject}"`);
 }
 
+// ---------- Gmail (IMAP/SMTP with an app password) ----------
+async function gWhoami() {
+  const c = gmailCreds();
+  console.log(`Gmail <${c.user}>`);
+}
+async function gList() {
+  const n = Number(arg("n", 10));
+  const unread = flag("unread");
+  const client = await gmailClient();
+  try {
+    const lock = await client.getMailboxLock("INBOX");
+    try {
+      const uids = await client.search(unread ? { seen: false } : { all: true }, { uid: true });
+      const pick = uids.slice(-n).reverse();
+      if (!pick.length) {
+        console.log("(no messages)");
+        return;
+      }
+      for await (const m of client.fetch(
+        pick,
+        { uid: true, envelope: true, flags: true, bodyStructure: false },
+        { uid: true },
+      )) {
+        const from = m.envelope?.from?.[0]?.address ?? "?";
+        const seen = m.flags?.has("\\Seen");
+        console.log(
+          `${seen ? " " : "*"} ${new Date(m.envelope?.date ?? Date.now()).toISOString().slice(0, 16).replace("T", " ")}  ${from.padEnd(32)}  ${m.envelope?.subject ?? "(no subject)"}\n    id=${m.uid}`,
+        );
+      }
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+async function gRead(id) {
+  if (!id) die("usage: mobymail read <uid>");
+  const client = await gmailClient();
+  try {
+    const lock = await client.getMailboxLock("INBOX");
+    try {
+      const m = await client.fetchOne(String(id), { source: true }, { uid: true });
+      if (!m?.source) die(`no message with uid ${id}`);
+      const parsed = await simpleParser(m.source);
+      console.log(
+        `From: ${parsed.from?.text ?? ""}\nTo: ${parsed.to?.text ?? ""}\nDate: ${parsed.date?.toISOString() ?? ""}\nSubject: ${parsed.subject ?? ""}\n\n${(parsed.text ?? "").trim()}`,
+      );
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+async function gSearch(q) {
+  if (!q) die('usage: mobymail search "<query>"');
+  const n = Number(arg("n", 10));
+  const client = await gmailClient();
+  try {
+    const lock = await client.getMailboxLock("INBOX");
+    try {
+      const uids = await client.search(
+        { or: [{ subject: q }, { from: q }, { body: q }] },
+        { uid: true },
+      );
+      const pick = uids.slice(-n).reverse();
+      if (!pick.length) {
+        console.log("(no matches)");
+        return;
+      }
+      for await (const m of client.fetch(pick, { uid: true, envelope: true }, { uid: true }))
+        console.log(
+          `${new Date(m.envelope?.date ?? Date.now()).toISOString().slice(0, 16).replace("T", " ")}  ${(m.envelope?.from?.[0]?.address ?? "?").padEnd(32)}  ${m.envelope?.subject ?? ""}\n    id=${m.uid}`,
+        );
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+async function gSend() {
+  const to = arg("to"),
+    subject = arg("subject"),
+    body = arg("body"),
+    cc = arg("cc");
+  if (!to || !subject || body == null)
+    die('usage: mobymail send --to a@b.c --subject "..." --body "..." [--cc x@y.z]');
+  const c = gmailCreds();
+  const t = nodemailer.createTransport({
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true,
+    auth: { user: c.user, pass: c.app_password },
+  });
+  await t.sendMail({ from: c.user, to, cc: cc || undefined, subject, text: body });
+  console.log(`sent from ${c.user} to ${to}: "${subject}"`);
+}
+
 const cmd = process.argv[2];
-const run = {
-  login,
-  whoami,
-  list,
-  read: () => read(process.argv[3]),
-  search: () => search(process.argv[3]),
-  send,
-}[cmd];
-if (!run)
-  die("commands: login | whoami | list | read <id> | search <q> | send --to --subject --body");
-run().catch((e) => die(e.message ?? String(e)));
+if (IS_GMAIL) {
+  const grun = {
+    whoami: gWhoami,
+    list: gList,
+    read: () => gRead(process.argv[3]),
+    search: () => gSearch(process.argv[3]),
+    send: gSend,
+    login: () =>
+      die(
+        `${ACCOUNT} is a Gmail mailbox: the app password is already stored; nothing to log in to`,
+      ),
+  }[cmd];
+  if (!grun) die("commands: whoami | list | read <uid> | search <q> | send --to --subject --body");
+  grun()
+    .then(() => process.exit(0))
+    .catch((e) => die(e.message ?? String(e)));
+} else {
+  const run = {
+    login,
+    whoami,
+    list,
+    read: () => read(process.argv[3]),
+    search: () => search(process.argv[3]),
+    send,
+  }[cmd];
+  if (!run)
+    die("commands: login | whoami | list | read <id> | search <q> | send --to --subject --body");
+  run().catch((e) => die(e.message ?? String(e)));
+}
