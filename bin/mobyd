@@ -9,4 +9,20 @@ export OPENCLAW_CONFIG_PATH="$OPENCLAW_STATE_DIR/mobyd.json"
 export OPENCLAW_GATEWAY_PORT="${MOBYD_PORT:-18799}"
 export OPENCLAW_PROFILE="mobyd"
 mkdir -p "$OPENCLAW_STATE_DIR"
+
+# `gateway run`: also bring up Moby's managed browser (profile "openclaw") once the
+# gateway is listening, so the `browser` tool is ready instead of Gemini improvising.
+if [ "${1:-}" = "gateway" ] && [ "${2:-}" = "run" ]; then
+  (
+    for _ in $(seq 1 30); do
+      sleep 2
+      if curl -s -m 2 "http://127.0.0.1:${OPENCLAW_GATEWAY_PORT}/health" >/dev/null 2>&1 || lsof -ti ":${OPENCLAW_GATEWAY_PORT}" >/dev/null 2>&1; then
+        sleep 3
+        node "$HERE/openclaw.mjs" browser start >/dev/null 2>&1 || true
+        break
+      fi
+    done
+  ) &
+fi
+
 exec node "$HERE/openclaw.mjs" "$@"
