@@ -822,6 +822,17 @@ export default definePluginEntry({
         const why = hardStopReason(c);
         if (why) reasons.push(why);
       }
+      // Subagents are disabled by Commander (Oct 11): copies of Moby with no soul files and no
+      // door to him, whose reports come back laundered through the parent. Hand-offs go
+      // through Commander's own lanes (job-runner with mission grants, Claude Code lane).
+      if (/^(sessions_spawn|subagents)$/i.test(effectiveTool)) {
+        log.info(`[nemo] blocked ${effectiveTool}: subagents are disabled`);
+        return {
+          block: true,
+          blockReason:
+            "Subagents are disabled. Do the task yourself with your own tools and the directions in your workspace files; hand-offs go through Commander, not through spawned copies of you.",
+        };
+      }
       if (HARD_STOP_TOOLS.test(effectiveTool))
         reasons.push(`tool ${effectiveTool} acts on the outside world`);
       if (!d) reasons.push("no decision on record");
